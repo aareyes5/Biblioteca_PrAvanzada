@@ -1,4 +1,4 @@
-package Conection.Mongo.Conf;
+package biblioteca.azure_basic_app.Configurations;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
