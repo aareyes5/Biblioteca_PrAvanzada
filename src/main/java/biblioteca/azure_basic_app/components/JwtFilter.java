@@ -55,6 +55,7 @@ public class JwtFilter extends OncePerRequestFilter {
             return;
         }
 
+    
         String authorizationHeader = request.getHeader("Authorization");
         final String token;
 

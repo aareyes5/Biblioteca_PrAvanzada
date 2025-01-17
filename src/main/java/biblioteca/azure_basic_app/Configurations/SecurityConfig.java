@@ -30,6 +30,7 @@ public class SecurityConfig {
             .and()
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/auth/login").permitAll()
+                .requestMatchers("/reservations/**").authenticated()                
                 .anyRequest().authenticated()
             )
             .sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

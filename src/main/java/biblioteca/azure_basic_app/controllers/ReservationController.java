@@ -13,11 +13,21 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.springframework.security.core.Authentication;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+
+
 
 @RestController
 @RequestMapping("/reservations")
@@ -37,59 +47,134 @@ public class ReservationController {
         return reservationRepository.findBySeccion(seccion);
     }
 
-    @PostMapping("/reserve")
-    public Map<String, String> reserveSeat(@RequestHeader("Authorization") String authHeader, @RequestBody Map<String, String> reservation) {
-        try {
-            // Validar el token
-            String token = authHeader.replace("Bearer ", "");
+    @PostMapping ("/Reservar")
+    //hacer una reserva con el envio de un body con datos de la reserva
+    public ResponseEntity<?> hacerReserva(@RequestHeader("Authorization") String authHeader,
+        @RequestBody Reservaciones reservacion) {
+        // Validar el token
+        try{
+            if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body("Token de autorización no proporcionado o inválido.");
+            }
+
+            String token = authHeader.substring(7); // Eliminar "Bearer " del token
             Claims claims = jwtUtil.validateToken(token);
-
-            // Extraer datos del usuario desde el token
             String userId = claims.getSubject();
-            String userName = claims.get("nombre", String.class);
 
-            Reservaciones newReservation = new Reservaciones();
-            newReservation.setId(reservation.get("id"));
-            newReservation.setEstado(true);
-            newReservation.setConfirmacion(false);
-            newReservation.setUsuario(userId); // Asociar el usuario
-            newReservation.setColumn(reservation.get("column"));
-            newReservation.setRow(reservation.get("row"));
-            newReservation.setSeccion(reservation.get("seccion"));
+            //verificar que el usuario tiene el mismo id que el usuario que hizo la reserva
+            if (!userId.equals(reservacion.getUsuario())) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body("No autorizado");
+                    
+            }
+            //verificar si el haciento tiene la bandera de reserva activa
+            if (reservacion.isEstado()) {
+                // Obtener las reservas del usuario
+                List<Reservaciones> reservations = reservationRepository.findByUsuario(userId);
 
-            // Guardar la reserva en la base de datos
-            reservationRepository.save(newReservation);
+                // Buscar si el asiento ya está reservado por el usuario
+                for (Reservaciones reservation : reservations) {
+                    if (reservation.getColumn().equals(reservacion.getColumn()) &&
+                        reservation.getRow().equals(reservacion.getRow()) &&
+                        reservation.getSeccion().equals(reservacion.getSeccion())) {
 
-            // Preparar la respuesta
-            Map<String, String> response = new HashMap<>();
-            response.put("id", userId);
-            response.put("nombre", userName);
-            response.put("estado", "true");
-            response.put("confirmacion", "false");
-            response.put("mensaje", "Reserva guardada con éxito");
+                        if (reservation.isEstado()) {
+                            return ResponseEntity.status(HttpStatus.CONFLICT)
+                                    .body("El asiento ya está reservado");
+                        } else {
+                            //coger el haciento selecionado y cancelar la reserva
+                            Reservaciones cancel = reservationRepository.findByColumnAndRowAndSeccion(reservacion.getColumn(), reservacion.getRow(), reservacion.getSeccion())
+                                    .orElseThrow(() -> new IllegalArgumentException("Asiento no encontrado"));
 
-            // Notificar mediante WebSocket
-            messagingTemplate.convertAndSend("/topic/seats", newReservation);
+                            // Cancelar la reserva del asiento
+                            cancel.setEstado(false);
+                            reservationRepository.save(cancel);
+                            // Notificar mediante WebSocket
+                            messagingTemplate.convertAndSend("/topic/seats", reservacion);
+                            return ResponseEntity.ok("Reserva cancelada exitosamente");
+                        }
+                    }
+                }
+            } else {
 
-            return response;
+                //Coger los datos actuales del haciento y actualizarlos a reservado
+                Reservaciones reservation = reservationRepository.findByColumnAndRowAndSeccion(reservacion.getColumn(), reservacion.getRow(), reservacion.getSeccion())
+                        .orElseThrow(() -> new IllegalArgumentException("Asiento no encontrado"));
+                reservation.setUsuario(userId);
+                reservation.setEstado(true);
+                reservationRepository.save(reservation);
+                // Notificar mediante WebSocket
+                messagingTemplate.convertAndSend("/topic/seats", reservacion);
+                return ResponseEntity.ok("Asiento reservado exitosamente");
+            }
+
+        }  catch (Exception e) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Error al cargar los asientos: " + e.getMessage());
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body("Solicitud no procesada correctamente");
+    }
+
+    //cargar asientos o crearlos en la db 
+    @PostMapping("/cargar_crearHcaientos")
+    public ResponseEntity<?> cargarHacientos(
+            @RequestHeader("Authorization") String authHeader, // Capturar el header de autorización
+            @RequestBody Map<String, String> seccion) {
+        try {
+            if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body("Token de autorización no proporcionado o inválido.");
+            }
+
+            String token = authHeader.substring(7); // Eliminar "Bearer " del token
+            Claims claims = jwtUtil.validateToken(token);
+            String userId = claims.getSubject();
+
+            // Verificar si el usuario es válido
+            if (userId == null || userId.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body("Usuario no autorizado.");
+            }
+
+            // Continuar con la lógica de cargar/crear asientos
+            if (reservationRepository.findBySeccion(seccion.get("seccion")).isEmpty()) {
+                // Crear los 20 asientos de la sección
+                for (int k = 1; k <= 20; k++) {
+                    String id_servicio = seccion.get("seccion");
+                    Reservaciones reservation = new Reservaciones();
+                    reservation.setId(k + "_" + id_servicio);
+                    reservation.setSeccion(id_servicio);
+                    for (int i = 1; i <= 4; i++) {
+                        reservation.setColumn(String.valueOf(i));
+                        for (int j = 1; j <= 5; j++) {
+                            reservation.setRow(String.valueOf(j));
+                            reservation.setEstado(false);
+                            reservation.setUsuario("");
+                            reservationRepository.save(reservation);
+                        }
+                    }
+                }
+            }
+
+            // Obtener los asientos creados/existentes
+            List<Reservaciones> reservations = reservationRepository.findBySeccion(seccion.get("seccion"));
+
+            // Convertir los objetos a JSON
+            ObjectMapper mapper = new ObjectMapper();
+            String jsonResponse = mapper.writeValueAsString(reservations);
+
+            return ResponseEntity.ok(jsonResponse);
+
         } catch (Exception e) {
-            // Manejo de errores
-            Map<String, String> errorResponse = new HashMap<>();
-            errorResponse.put("error", e.getMessage());
-            return errorResponse;
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error al cargar los asientos: " + e.getMessage());
         }
     }
 
 
-    @DeleteMapping("/cancel/{id}")
-    public void cancelReservation(@PathVariable String id) {
-        reservationRepository.deleteById(id);
-         // Notificar mediante WebSocket
-        messagingTemplate.convertAndSend("/topic/seats", id);
-
         
-    }
-
     //confirmacion de mi reserva
     @PutMapping("/confirm/{id}")
     public ResponseEntity<String> confirmReservation(@PathVariable String id) {
